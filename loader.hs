@@ -1,6 +1,9 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 import Data.Either
 import Data.List
 import Data.Time
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Attoparsec.Text as A
@@ -67,6 +70,95 @@ optionalDateParser = do
         m = read mStr
         y = read yStr
     return $ if y == 2999 then Nothing else Just $ fromGregorian y m d
+
+flowUsageCodeParser :: A.Parser FlowUsageCode
+flowUsageCodeParser = do
+    code <- A.satisfy $ A.inClass "CGA"
+    return $ case code of
+        'A' -> ActualFare
+        'G' -> CombinedFlows
+        'C' -> Summation
+
+flowDirectionParser :: A.Parser FlowDirection
+flowDirectionParser = do
+    code <- A.satisfy (\x -> (x == 'S') || (x == 'R'))
+    return $ case code of
+        'S' -> SingleDirection
+        'R' -> Reversible
+
+flowCrossLondonParser :: A.Parser FlowCrossLondon
+flowCrossLondonParser = do
+    code <- A.satisfy $ A.inClass "0123"
+    return $ case code of
+        '0' -> NotViaLondon
+        '1' -> ViaLondonTube
+        '2' -> ViaLondon
+        '3' -> ViaThameslink
+
+flowRecordParser :: A.Parser FlowRecord
+flowRecordParser = do
+    A.char 'R'
+    A.char 'F'
+    originCode              <- A.take 4
+    destinationCode         <- A.take 4
+    routeCode               <- A.count 5 A.digit
+    statusCode              <- A.take 3
+    usageCode               <- flowUsageCodeParser
+    direction               <- flowDirectionParser
+    endDate                 <- optionalDateParser
+    startDate               <- dateParser
+    toc                     <- A.take 3
+    crossLondonInd          <- flowCrossLondonParser
+    nsDiscInd               <- A.satisfy $ A.inClass "0123"
+    let isPrivate =            (nsDiscInd == '2') || (nsDiscInd == '3')
+    let nonStandardDiscounts = (nsDiscInd == '1') || (nsDiscInd == '3')
+    publishedInNFM          <- ynParser
+    flowID                  <- A.count 7 A.digit
+    return $ FlowRecord
+        { flOriginCode           = originCode
+        , flDestinationCode      = destinationCode
+        , flRouteCode            = read routeCode
+        , flStatusCode           = statusCode
+        , flUsageCode            = usageCode
+        , flDirection            = direction
+        , flEndDate              = endDate
+        , flStartDate            = startDate
+        , flToc                  = toc
+        , flCrossLondonInd       = crossLondonInd
+        , flIsPrivate            = isPrivate
+        , flNonStandardDiscounts = nonStandardDiscounts
+        , flPublishedInNFM       = publishedInNFM
+        , flFlowID               = read flowID
+        }
+
+fareRecordParser :: A.Parser FareRecord
+fareRecordParser = do
+    A.char 'R'
+    A.char 'T'
+    flowID          <- A.count 7 A.digit
+    ticketCode      <- A.take 3
+    fare            <- A.count 8 A.digit
+    restrictionCode <- A.take 2
+    return $ FareRecord
+        { fareFlowID            = read flowID
+        , fareTicketCode        = ticketCode
+        , farePrice             = read fare
+        , fareRestrictionCode   = restrictionCode
+        }
+
+stationClusterRecordParser :: A.Parser StationClusterRecord
+stationClusterRecordParser = do
+    A.char 'R'
+    clusterID   <- A.take 4
+    clusterNLC  <- A.take 4
+    endDate     <- optionalDateParser
+    startDate   <- dateParser
+    return $ StationClusterRecord
+        { scClusterID   = clusterID
+        , scClusterNLC  = clusterNLC
+        , scEndDate     = endDate
+        , scStartDate   = startDate
+        }
 
 railcardRecordParser :: A.Parser RailcardRecord
 railcardRecordParser = do
@@ -216,7 +308,7 @@ locationRecordParser = do
         , locStartDate              = startDate
         , locQuoteDate              = quoteDate
         , locAdminAreaCode          = adminAreaCode
-        , locNlcCode                = nlcCode
+        , locNLCCode                = nlcCode
         , locDescription            = T.stripEnd description
         , locCrsCode                = crsCode
         , locResvCode               = resvCode
@@ -280,37 +372,118 @@ displayForTesting parser line = do
     putStrLn text
 
 
-main :: IO ()
-main = do
-    rightNow <- getCurrentTime
-    let today = utctDay rightNow
+loadFlows :: T.Text -> Day -> ([FlowRecord], Map.Map Int [FareRecord])
+loadFlows rawText currentDay = (currentFlows, faresMap)
+    where
+        allLines            = recordLines rawText
+        flowLines           = extractRecordLines 'F' allLines
+        fareLines           = extractRecordLines 'T' allLines
+        flowParseResults    = map (A.parseOnly flowRecordParser) flowLines
+        fareParseResults    = map (A.parseOnly fareRecordParser) fareLines
+        allFlows            = rights flowParseResults
+        currentFlows        = extractCurrentRecords flStartDate flEndDate currentDay allFlows
+        allFares            = rights fareParseResults
+        farePairs           = [(fareFlowID fare, [fare]) | fare <- allFares]
+        faresMap            = Map.fromListWith (++) farePairs
 
-    tcl <- T.readFile "atocData/RJFAF851.TCL"
-    let tclLines = recordLines tcl
-    mapM_ (displayForTesting classLegendRecordParser) tclLines
-
-    rlc <- T.readFile "atocData/RJFAF851.RLC"
-    let rlcLines = recordLines rlc
-    mapM_ (displayForTesting railcardRecordParser) (take 3 rlcLines)
-
-    loc <- T.readFile "atocData/RJFAF851.LOC"
-    let locLines = recordLines loc
-
+{-
     let locationLines          = extractRecordLines 'L' locLines
     let railcardGeographyLines = extractRecordLines 'R' locLines
     let ttGroupLocationLines   = extractRecordLines 'G' locLines
     let groupMemberLines       = extractRecordLines 'M' locLines
     let synonymLines           = extractRecordLines 'S' locLines
+-}
+loadLocations :: T.Text -> Day -> Map.Map NLC LocationRecord
+loadLocations rawText currentDay = outputMap
+    where
+        allLines        = recordLines rawText
+        locationLines   = extractRecordLines 'L' allLines
+        locParseResults = map (A.parseOnly locationRecordParser) locationLines
+        locRecords      = rights locParseResults
+        curLocRecords   = extractCurrentRecords locStartDate locEndDate currentDay locRecords
+        nlcPairs        = [(locNLCCode loc, loc) | loc <- curLocRecords]
+        outputMap       = Map.fromList nlcPairs
 
-    let locations = rights $ map (A.parseOnly locationRecordParser) locationLines
-    let currentLocations = extractCurrentRecords locStartDate locEndDate today locations
-    let glasgowZone = filter (\x -> (locZoneNo x) == (T.pack "I417")) currentLocations
-    let glasgowZoneNames = map locDescription glasgowZone
-    T.putStrLn $ T.unlines $ sort glasgowZoneNames
+loadStationClusters :: T.Text -> Day -> Map.Map NLC [NLC]
+loadStationClusters rawText currentDay = outputMap
+    where
+        allLines        = recordLines rawText
+        parseResults    = map (A.parseOnly stationClusterRecordParser) allLines
+        records         = rights parseResults
+        curRecords      = extractCurrentRecords scStartDate scEndDate currentDay records
+        pairs           = [(scClusterID rec, [scClusterNLC rec]) | rec <- curRecords]
+        outputMap       = Map.fromListWith (++) pairs
+
+main :: IO ()
+main = do
+    rightNow <- getCurrentTime
+    let today = utctDay rightNow
+
+    -- LOCATIONS
+    loc <- T.readFile "atocData/RJFAF851.LOC"
+    let locsByNLC = loadLocations loc today
+
+    let displayMaybeLoc code Nothing  = T.unpack code
+        displayMaybeLoc code (Just l) = (T.unpack code) ++ ": " ++ (T.unpack $ locDescription l)
+    let displayLoc code = displayMaybeLoc code (Map.lookup code locsByNLC)
+
+    -- STATION CLUSTERS
+    fsc <- T.readFile "atocData/RJFAF851.FSC"
+    let clusters = loadStationClusters fsc today
+
+    -- Print out all the clusters
+    let showClusterPair (k, v) =
+          "[" ++ (T.unpack k) ++ "]\n" ++ (unlines memberList)
+          where memberList = map (\x -> displayLoc x) v
+    let groupedClusterPairs = (Map.toList clusters)
+    let justQ5Clusters = filter (\(k, v) -> (T.isPrefixOf "Q5" k)) groupedClusterPairs
+    mapM_ (\x -> putStrLn $ showClusterPair x) justQ5Clusters
+
+    --let glasgowZone = filter (\x -> (locZoneNo x) == "I417") currentLocations
+    --let glasgowZone = filter (\x -> (locPteCode x) == "SC") currentLocations
+    --let glasgowZoneNames = map (\x -> T.intercalate " | " [locUicCode x, locNLCCode x, locCrsCode x, locCounty x, locPteCode x, locZoneNo x, locDescription x]) glasgowZone
+    --T.putStrLn $ T.unlines $ sort glasgowZoneNames
+
+    -- OTHER SHITE
+    let glqNLC = "9950"
+    let glcNLC = "9813"
+    let glqOrGlcNLC = "0433"
+    let partickNLC = "9917"
+    let hstNLC = "9909"
+    let cathcartNLC = "9795"
+    let neilstonNLC = "9773"
+    let eastKilbrideNLC = "9793"
+    let glaSubwayNLC = "H973"
+
+    let cct = Map.lookup cathcartNLC locsByNLC
+    putStrLn $ show cct
+
+    ffl <- T.readFile "atocData/RJFAF851.FFL"
+    let (flows, faresMap) = loadFlows ffl today
+    let subwayFlows = filter (\x -> (flOriginCode x == glaSubwayNLC) || (flDestinationCode x == glaSubwayNLC)) flows
+    
+    -- this is horrible
+    let displayFlow flow =
+          (src ++ " -> " ++ dst ++ " :: " ++ (show $ flFlowID flow) ++ "\n" ++ (unlines fareStrings))
+          where
+            srcCode = flOriginCode flow
+            dstCode = flDestinationCode flow
+            src     = displayLoc srcCode
+            dst     = displayLoc dstCode
+            fareRecords = faresMap Map.! (flFlowID flow)
+            fareStrings = ["  " ++ (T.unpack $ fareTicketCode flow) ++ " " ++ (show $ farePrice flow) | flow <- fareRecords]
+
+    mapM_ (\x -> putStrLn $ displayFlow x) (take 3 subwayFlows)
+
+    --let glqOrGlcToCctFares = filter (\x -> fareFlowID x == 8390) fares
+    --mapM_ (\x -> putStrLn $ show x) cathcartFlows
+    --mapM_ (\x -> putStrLn $ show x) glqOrGlcToCctFares
+    --mapM_ (\x -> putStrLn $ show x) someFares
+
 
     --mapM_ (\x -> putStrLn $ show x) glasgow
 
-    --let hst = filter (\x -> T.isPrefixOf (T.pack "HIGH ST") (locDescription x)) currentLocations
+    --let hst = filter (\x -> T.isPrefixOf "HIGH ST" (locDescription x)) currentLocations
     --mapM_ (\x -> putStrLn $ show x) hst
 
     --mapM_ (\x -> putStrLn $ show x) (take 20 locations)

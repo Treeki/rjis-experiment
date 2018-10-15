@@ -3,6 +3,8 @@ module RecordTypes where
 import Data.Time
 import qualified Data.Text as T
 
+type NLC = T.Text
+
 data Weekday = Monday | Tuesday | Wednesday | Thursday | Friday | Saturday | Sunday
     deriving (Show, Enum)
 
@@ -15,8 +17,8 @@ data FlowCrossLondon = NotViaLondon | ViaLondonTube | ViaLondon | ViaThameslink
         deriving (Show, Enum)
 
 data FlowRecord = FlowRecord
-    { flOriginCode           :: T.Text
-    , flDestinationCode      :: T.Text
+    { flOriginCode           :: NLC
+    , flDestinationCode      :: NLC
     , flRouteCode            :: Int
     , flStatusCode           :: T.Text
     , flUsageCode            :: FlowUsageCode
@@ -28,11 +30,11 @@ data FlowRecord = FlowRecord
     , flIsPrivate            :: Bool
     , flNonStandardDiscounts :: Bool
     , flPublishedInNFM       :: Bool
-    , flFlowID               :: T.Text
+    , flFlowID               :: Int
     } deriving Show
 
 data FareRecord = FareRecord
-    { fareFlowID          :: T.Text
+    { fareFlowID          :: Int
     , fareTicketCode      :: T.Text
     , farePrice           :: Int
     , fareRestrictionCode :: T.Text
@@ -40,8 +42,8 @@ data FareRecord = FareRecord
 
 -- FSC: Station Cluster (Page 15)
 data StationClusterRecord = StationClusterRecord
-    { scClusterID  :: T.Text
-    , scClusterNLC :: T.Text
+    { scClusterID  :: NLC
+    , scClusterNLC :: NLC
     , scEndDate    :: Maybe Day
     , scStartDate  :: Day
     } deriving Show
@@ -50,8 +52,8 @@ data StationClusterRecord = StationClusterRecord
 -- NFC: Non-derivable fare overrides (Page 18-19)
 -- Pretty much the same, as far as I can tell
 data NonDerivableFareRecord = NonDerivableFareRecord
-    { ndfOriginCode      :: T.Text
-    , ndfDestinationCode :: T.Text
+    { ndfOriginCode      :: NLC
+    , ndfDestinationCode :: NLC
     , ndfRouteCode       :: Int
     , ndfRailcardCode    :: Maybe T.Text
     , ndfTicketCode      :: T.Text
@@ -74,15 +76,15 @@ data NodisFlag = NodisFlagN | NodisFlagX | NodisFlagD | NodisFlagSpace
     deriving (Show, Enum)
 
 data NonStandardDiscountRecord = NonStandardDiscountRecord
-    { nsdOriginCode       :: Maybe T.Text
-    , nsdDestinationCode  :: Maybe T.Text
+    { nsdOriginCode       :: Maybe NLC
+    , nsdDestinationCode  :: Maybe NLC
     , nsdRouteCode        :: Maybe Int
     , nsdRailcardCode     :: Maybe T.Text
     , nsdTicketCode       :: Maybe T.Text
     , nsdEndDate          :: Maybe Day
     , nsdStartDate        :: Day
     , nsdQuoteDate        :: Day
-    , nsdUseNlc           :: Maybe T.Text
+    , nsdUseNLC           :: Maybe NLC
     , nsdAdultNodisFlag   :: NodisFlag
     , nsdAdultAddOnAmount :: Maybe Int
     , nsdAdultRebookFlag  :: RebookFlag
@@ -351,7 +353,7 @@ data LocationRecord = LocationRecord
     , locStartDate              :: Day
     , locQuoteDate              :: Day
     , locAdminAreaCode          :: T.Text
-    , locNlcCode                :: T.Text
+    , locNLCCode                :: NLC
     , locDescription            :: T.Text
     , locCrsCode                :: T.Text
     , locResvCode               :: T.Text
